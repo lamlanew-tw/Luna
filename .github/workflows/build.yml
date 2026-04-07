@@ -49,3 +49,30 @@ jobs:
         with:
           name: Luna-tvOS
           path: build/Luna-tvOS.ipa
+
+  release:
+    name: Release Artifacts
+    runs-on: ubuntu-latest
+    needs: [build-ios, build-tvos]
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Download iOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Luna-iOS
+          path: artifacts/ios
+      - name: Download tvOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Luna-tvOS
+          path: artifacts/tvos
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          draft: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
