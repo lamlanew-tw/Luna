@@ -68,6 +68,13 @@ jobs:
         with:
           name: Luna-tvOS
           path: artifacts/tvos
+      - name: Create Tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          TAG="v$(date +%Y%m%d-%H%M%S)"
+          git tag $TAG
+          git push origin $TAG
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
