@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SoraCore
 import Kingfisher
 
 struct SearchView: View {
@@ -23,9 +24,19 @@ struct SearchView: View {
     @State private var serviceDownloadError: String?
     @State private var searchHistory: [String] = []
     
+    @State private var searchMode: SearchMode = .tmdb
+    @State private var selectedService: Service? = nil
+    @State private var serviceSearchResults: [SearchItem] = []
+    
     @StateObject private var tmdbService = TMDBService.shared
     @StateObject private var contentFilter = TMDBContentFilter.shared
+    @StateObject private var serviceManager = ServiceManager.shared
+    @StateObject private var jsController = JSController.shared
     @Environment(\.verticalSizeClass) var verticalSizeClass
+    
+    enum SearchMode {
+        case tmdb, service
+    }
     
     enum SearchFilter: String, CaseIterable {
         case all = "All"
@@ -53,6 +64,10 @@ struct SearchView: View {
         case .tvShows:
             return "tv.fill"
         }
+    }
+    
+    var hasResults: Bool {
+        searchMode == .tmdb ? !searchResults.isEmpty : !serviceSearchResults.isEmpty
     }
     
     private var columnsCount: Int {
@@ -95,11 +110,12 @@ struct SearchView: View {
                     .onChangeComp(of: searchText) { _, newValue in
                         if newValue.isEmpty {
                             searchResults = []
+                            serviceSearchResults = []
                             errorMessage = nil
                         }
                     }
                     
-                    if !searchResults.isEmpty {
+                    if searchMode == .tmdb && !searchResults.isEmpty {
                         Menu {
                             ForEach(SearchFilter.allCases, id: \.self) { filter in
                                 Button(action: {
@@ -121,7 +137,7 @@ struct SearchView: View {
                         .transition(.scale.combined(with: .opacity))
                     }
                 }
-                .animation(.easeInOut(duration: 0.2), value: searchResults.isEmpty)
+                .animation(.easeInOut(duration: 0.2), value: hasResults)
             }
             .padding()
             
@@ -155,20 +171,42 @@ struct SearchView: View {
                         .padding(.horizontal)
                     
                     Button("Try Again") {
-                            performSearch()
+                        performSearch()
                     }
                     .padding(.top)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if searchText.isEmpty {
-                if searchHistory.isEmpty {
+                if searchMode == .service && selectedService == nil {
+                    VStack(spacing: 12) {
+                        Image(systemName: "puzzlepiece.extension")
+                            .imageScale(.large)
+                            .font(.system(size: 60))
+                            .foregroundColor(.secondary)
+                        
+                        Text("Select a Service")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                        
+                        Text("Tap the source button at the top right to pick a service")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.top, 40)
+                } else if searchHistory.isEmpty {
+                    let servicePrompt = "Search via \(selectedService?.metadata.sourceName ?? "Service")"
+                    let defaultPrompt = contentFilter.animeOnlyMode ? "Search Anime" : "Search Movies & TV Shows"
+                    
                     VStack {
                         Image(systemName: "magnifyingglass.circle")
                             .imageScale(.large)
                             .font(.system(size: 60))
                             .foregroundColor(.secondary)
                         
-                        Text("Search Movies & TV Shows")
+                        Text(searchMode == .service ? servicePrompt : defaultPrompt)
                             .font(.title2)
                             .foregroundColor(.secondary)
                             .padding()
@@ -235,6 +273,38 @@ struct SearchView: View {
                         Spacer()
                     }
                 }
+            } else if searchMode == .service {
+                if serviceSearchResults.isEmpty {
+                    VStack {
+                        Image(systemName: "questionmark.circle")
+                            .imageScale(.large)
+                            .font(.system(size: 60))
+                            .foregroundColor(.secondary)
+                        
+                        Text("No results found")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                            .padding()
+                        
+                        Text("Try searching for something else")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let service = selectedService {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: columnsCount), spacing: 16) {
+                        ForEach(serviceSearchResults) { item in
+                            NavigationLink(destination: MediaDetailView(moduleItem: item, service: service)) {
+                                ServiceSearchResultCard(item: item)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.top)
+                }
             } else if filteredResults.isEmpty && !searchResults.isEmpty {
                 VStack {
                     Image(systemName: "tv.and.hifispeaker.fill")
@@ -283,7 +353,12 @@ struct SearchView: View {
                 .padding(.top)
             }
         }
-        .navigationTitle("Search")
+        .navigationTitle(navigationTitle)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                sourceMenu
+            }
+        }
         .alert("Service Downloaded", isPresented: $showServiceDownloadAlert) {
             Button("OK") { }
         } message: {
@@ -306,8 +381,83 @@ struct SearchView: View {
                 performSearch()
             }
         }
+        .onChangeComp(of: contentFilter.filterNSFW) { _, _ in
+            if !searchText.isEmpty && !searchResults.isEmpty {
+                performSearch()
+            }
+        }
+        .onChangeComp(of: contentFilter.animeOnlyMode) { _, _ in
+            if !searchText.isEmpty {
+                performSearch()
+            }
+        }
         .onAppear {
             loadSearchHistory()
+        }
+    }
+    
+    // MARK: - Source Menu
+    private var navigationTitle: String {
+        switch searchMode {
+        case .tmdb:
+            return "Search"
+        case .service:
+            return selectedService.map { $0.metadata.sourceName } ?? "Search"
+        }
+    }
+    
+    @ViewBuilder
+    private var sourceMenu: some View {
+        Menu {
+            Button(action: {
+                searchMode = .tmdb
+                selectedService = nil
+                searchText = ""
+                searchResults = []
+                serviceSearchResults = []
+                errorMessage = nil
+            }) {
+                Label("TMDB", systemImage: searchMode == .tmdb ? "checkmark" : "magnifyingglass")
+            }
+            
+            if !serviceManager.services.isEmpty {
+                Divider()
+                ForEach(0..<serviceManager.services.count, id: \.self) { index in
+                    sourceMenuServiceButton(index: index)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(searchMode == .tmdb ? "TMDB" : (selectedService?.metadata.sourceName ?? "Source"))
+                    .font(.subheadline)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+            }
+            .foregroundColor(.accentColor)
+        }
+    }
+    
+    @ViewBuilder
+    private func sourceMenuServiceButton(index: Int) -> some View {
+        let service = serviceManager.services[index]
+        let isSelected = searchMode == .service && selectedService?.id == service.id
+        Button(action: {
+            selectService(service)
+        }) {
+            Label(service.metadata.sourceName, systemImage: isSelected ? "checkmark" : "puzzlepiece.extension")
+        }
+    }
+    
+    // MARK: - Service Selection
+    private func selectService(_ service: Service) {
+        searchMode = .service
+        selectedService = service
+        jsController.loadScript(service.jsScript)
+        searchResults = []
+        serviceSearchResults = []
+        errorMessage = nil
+        if !searchText.isEmpty {
+            performSearch()
         }
     }
     
@@ -352,10 +502,17 @@ struct SearchView: View {
     
     
     private func performSearch() {
-        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return
-        }
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         
+        if searchMode == .service {
+            performServiceSearch()
+        } else {
+            performTMDBSearch()
+        }
+    }
+    
+    private func performTMDBSearch() {
         isLoading = true
         errorMessage = nil
         
@@ -379,6 +536,29 @@ struct SearchView: View {
             }
         }
     }
+    
+    private func performServiceSearch() {
+        guard let service = selectedService else {
+            errorMessage = "Please select a service first."
+            return
+        }
+        
+        isLoading = true
+        errorMessage = nil
+        serviceSearchResults = []
+        
+        jsController.fetchJsSearchResults(keyword: searchText, module: service) { items in
+            Task { @MainActor in
+                self.isLoading = false
+                if items.isEmpty {
+                    self.serviceSearchResults = []
+                } else {
+                    self.serviceSearchResults = items
+                    self.addToSearchHistory(self.searchText)
+                }
+            }
+        }
+    }
 }
 
 struct SearchBarLuna: View {
@@ -389,7 +569,6 @@ struct SearchBarLuna: View {
     var body: some View {
         HStack {
             TextField("Search...", text: $text, onCommit: onSearchButtonClicked)
-                
                 .padding(7)
                 .padding(.horizontal, 25)
 #if !os(tvOS)
@@ -415,6 +594,26 @@ struct SearchBarLuna: View {
                         }
                     }
                 )
+        }
+    }
+}
+
+struct ServiceSearchResultCard: View {
+    let item: SearchItem
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            KFImage(URL(string: item.imageUrl))
+                .resizable()
+                .aspectRatio(2/3, contentMode: .fill)
+                .cornerRadius(10)
+                .clipped()
+            
+            Text(item.title)
+                .font(.caption)
+                .foregroundColor(.primary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
         }
     }
 }

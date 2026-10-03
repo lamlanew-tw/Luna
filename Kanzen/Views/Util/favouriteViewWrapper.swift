@@ -5,6 +5,7 @@
 //  Created by Dawud Osman on 22/10/2025.
 //
 
+import Sybau
 import SwiftUI
 
 #if !os(tvOS)
@@ -31,10 +32,11 @@ struct favouriteViewWrapper: View {
                         do {
                             let content = try ModuleManager.shared.getModuleScript(module: module)
                             try kanzen.loadScript(content)
+                            ModuleImageHeaders.activate(for: module.moduleData)
                             self.moduleLoaded = true
                         }
                         catch{
-                            Logger.shared.log("Error loading module", type: "Error")
+                            Logger.shared.log("Error loading module: \(error.localizedDescription)", type: "Error")
                         }
                     }
                 }

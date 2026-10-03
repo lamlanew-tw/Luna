@@ -5,9 +5,11 @@
 //  Created by Francesco on 07/08/25.
 //
 
-import SwiftUI
-import Kingfisher
 import AVKit
+import Sybau
+import SwiftUI
+import SoraCore
+import Kingfisher
 
 private struct ModuleDetailContext {
     let item: SearchItem
@@ -17,6 +19,8 @@ private struct ModuleDetailContext {
 struct MediaDetailView: View {
     let searchResult: TMDBSearchResult
     private let moduleContext: ModuleDetailContext?
+    private let preselectedEpisode: TMDBEpisode?
+    private let directPlayOnLoad: Bool
     
     @StateObject private var tmdbService = TMDBService.shared
     @State private var movieDetail: TMDBMovieDetail?
@@ -41,6 +45,22 @@ struct MediaDetailView: View {
     @State private var selectedModuleEpisodeIndex: Int = 0
     @State private var moduleStreamError: String?
     @State private var showingModuleStreamError = false
+    @State private var isDirectStreaming = false
+    @State private var activeJSController: JSController?
+    
+    @State private var tmdbMatch: TMDBSearchResult?
+    @State private var isMatchingTMDB: Bool = false
+    @State private var tmdbMatchAttempted: Bool = false
+    
+    @State private var streamOptions: [StreamOption] = []
+    @State private var showingStreamMenu = false
+    @State private var pendingSubtitles: [String]?
+    @State private var pendingService: Service?
+    @State private var pendingStreamURL: String?
+    @State private var pendingHeaders: [String: String]?
+    @State private var pendingDefaultSubtitle: String?
+    @State private var subtitleOptions: [(title: String, url: String)] = []
+    @State private var showingSubtitlePicker = false
     
     @StateObject private var serviceManager = ServiceManager.shared
     @ObservedObject private var libraryManager = LibraryManager.shared
@@ -49,12 +69,21 @@ struct MediaDetailView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @AppStorage("useSolidBackgroundBehindHero") private var useSolidBackgroundBehindHero = false
     @AppStorage("tmdbLanguage") private var selectedLanguage = "en-US"
-
+    
     init(searchResult: TMDBSearchResult) {
         self.searchResult = searchResult
         self.moduleContext = nil
+        self.preselectedEpisode = nil
+        self.directPlayOnLoad = false
     }
-
+    
+    init(searchResult: TMDBSearchResult, preselectedEpisode: TMDBEpisode) {
+        self.searchResult = searchResult
+        self.moduleContext = nil
+        self.preselectedEpisode = preselectedEpisode
+        self.directPlayOnLoad = true
+    }
+    
     init(moduleItem: SearchItem, service: Service) {
         self.searchResult = TMDBSearchResult(
             id: abs(moduleItem.href.hashValue),
@@ -72,8 +101,10 @@ struct MediaDetailView: View {
             genreIds: nil
         )
         self.moduleContext = ModuleDetailContext(item: moduleItem, service: service)
+        self.preselectedEpisode = nil
+        self.directPlayOnLoad = false
     }
-
+    
     private var headerHeight: CGFloat {
 #if os(tvOS)
         UIScreen.main.bounds.height * 0.8
@@ -81,8 +112,8 @@ struct MediaDetailView: View {
         550
 #endif
     }
-
-
+    
+    
     private var minHeaderHeight: CGFloat {
 #if os(tvOS)
         UIScreen.main.bounds.height * 0.8
@@ -90,22 +121,33 @@ struct MediaDetailView: View {
         400
 #endif
     }
-
+    
     private var isCompactLayout: Bool {
         return verticalSizeClass == .compact
     }
-
+    
     private var isModuleMode: Bool {
         moduleContext != nil
     }
-
+    
+    private var librarySearchResult: TMDBSearchResult {
+        tmdbMatch ?? searchResult
+    }
+    
+    private var displayTitle: String {
+        if isModuleMode {
+            return tvShowDetail?.name ?? movieDetail?.title ?? tmdbMatch?.displayTitle ?? searchResult.displayTitle
+        }
+        return searchResult.displayTitle
+    }
+    
     private var isMovieContent: Bool {
         if isModuleMode {
             return moduleEpisodes.isEmpty
         }
         return searchResult.isMovie
     }
-
+    
     private var canPlayModule: Bool {
         if !isModuleMode {
             return !serviceManager.activeServices.isEmpty
@@ -125,7 +167,7 @@ struct MediaDetailView: View {
             let episodeNumber = moduleEpisodes[safeIndex].number
             return "Play Episode \(episodeNumber)"
         }
-
+        
         if searchResult.isMovie {
             return "Play"
         } else if let selectedEpisode = selectedEpisodeForSearch {
@@ -152,14 +194,35 @@ struct MediaDetailView: View {
 #if !os(tvOS)
             navigationOverlay
 #endif
+            
+            if isDirectStreaming {
+                ZStack {
+                    Color.black.opacity(0.55)
+                        .ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.4)
+                        Text("Finding stream…")
+                            .font(.subheadline)
+                            .foregroundColor(.white)
+                    }
+                    .padding(24)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+            }
         }
         .navigationBarHidden(true)
 #if !os(tvOS)
-        .gesture(
-            DragGesture()
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20, coordinateSpace: .local)
                 .onEnded { value in
-                    if value.translation.width > 100 && abs(value.translation.height) < 50 {
-                        presentationMode.wrappedValue.dismiss()
+                    let horizontal = value.translation.width
+                    let vertical = value.translation.height
+                    if horizontal > 100 && horizontal > abs(vertical) * 2 {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            presentationMode.wrappedValue.dismiss()
+                        }
                     }
                 }
         )
@@ -170,26 +233,34 @@ struct MediaDetailView: View {
 #endif
         .onAppear {
             loadMediaDetails()
-            if !isModuleMode {
-                updateBookmarkStatus()
+            updateBookmarkStatus()
+            if let episode = preselectedEpisode {
+                selectedEpisodeForSearch = episode
+            }
+        }
+        .onChangeComp(of: isLoading) { _, newValue in
+            if !newValue && directPlayOnLoad && !isDirectStreaming {
+                isDirectStreaming = true
+                directPlayWithFirstService()
             }
         }
         .onChangeComp(of: libraryManager.collections) { _, _ in
-            if !isModuleMode {
-                updateBookmarkStatus()
-            }
+            updateBookmarkStatus()
+        }
+        .onChangeComp(of: tmdbMatch?.id) { _, _ in
+            updateBookmarkStatus()
         }
         .sheet(isPresented: $showingSearchResults) {
             ModulesSearchResultsSheet(
-                mediaTitle: searchResult.displayTitle,
+                mediaTitle: displayTitle,
                 originalTitle: romajiTitle,
-                isMovie: searchResult.isMovie,
+                isMovie: isMovieContent,
                 selectedEpisode: selectedEpisodeForSearch,
-                tmdbId: searchResult.id
+                tmdbId: librarySearchResult.id
             )
         }
         .sheet(isPresented: $showingAddToCollection) {
-            AddToCollectionView(searchResult: searchResult)
+            AddToCollectionView(searchResult: librarySearchResult)
         }
         .alert("Stream Error", isPresented: $showingModuleStreamError) {
             Button("OK", role: .cancel) {
@@ -197,6 +268,45 @@ struct MediaDetailView: View {
             }
         } message: {
             Text(moduleStreamError ?? "Failed to start playback")
+        }
+        .adaptiveConfirmationDialog("Select Server", isPresented: $showingStreamMenu, titleVisibility: .visible) {
+            ForEach(streamOptions) { option in
+                Button(option.name) {
+                    if let service = pendingService {
+                        resolveSubtitleSelection(
+                            subtitles: pendingSubtitles,
+                            defaultSubtitle: option.subtitle,
+                            service: service,
+                            streamURL: option.url,
+                            headers: option.headers
+                        )
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Choose a server to stream from")
+        }
+        .adaptiveConfirmationDialog("Select Subtitle", isPresented: $showingSubtitlePicker, titleVisibility: .visible) {
+            ForEach(subtitleOptions, id: \.url) { option in
+                Button(option.title) {
+                    showingSubtitlePicker = false
+                    if let service = pendingService, let url = pendingStreamURL {
+                        playStreamURL(url, service: service, subtitle: option.url, headers: pendingHeaders)
+                    }
+                }
+            }
+            Button("No Subtitles") {
+                showingSubtitlePicker = false
+                if let service = pendingService, let url = pendingStreamURL {
+                    playStreamURL(url, service: service, subtitle: nil, headers: pendingHeaders)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                subtitleOptions = []; pendingStreamURL = nil; pendingHeaders = nil
+            }
+        } message: {
+            Text("Choose a subtitle track")
         }
     }
     
@@ -277,9 +387,13 @@ struct MediaDetailView: View {
             StretchyHeaderView(
                 backdropURL: {
                     if isModuleMode {
-                        return moduleContext?.item.imageUrl
+                        return movieDetail?.fullBackdropURL
+                        ?? tvShowDetail?.fullBackdropURL
+                        ?? movieDetail?.fullPosterURL
+                        ?? tvShowDetail?.fullPosterURL
+                        ?? moduleContext?.item.imageUrl
                     }
-
+                    
                     if searchResult.isMovie {
                         return movieDetail?.fullBackdropURL ?? movieDetail?.fullPosterURL
                     } else {
@@ -307,6 +421,7 @@ struct MediaDetailView: View {
                 playAndBookmarkSection
                 
                 if isModuleMode {
+                    moduleTMDBDetailsSection
                     moduleDetailsSection
                     episodesSection
                 } else if searchResult.isMovie {
@@ -360,7 +475,7 @@ struct MediaDetailView: View {
     
     @ViewBuilder
     private var titleText: some View {
-        Text(searchResult.displayTitle)
+        Text(displayTitle)
             .font(.largeTitle)
             .fontWeight(.bold)
             .foregroundColor(.white)
@@ -385,7 +500,7 @@ struct MediaDetailView: View {
                             showFullSynopsis.toggle()
                         }
                     }
-            } else if let overview = searchResult.isMovie ? movieDetail?.overview : tvShowDetail?.overview,
+            } else if let overview = isMovieContent ? movieDetail?.overview : tvShowDetail?.overview,
                       !overview.isEmpty {
                 Text(showFullSynopsis ? overview : String(overview.prefix(200)) + (overview.count > 200 ? "..." : ""))
                     .font(.body)
@@ -428,28 +543,26 @@ struct MediaDetailView: View {
             }
             .disabled(!canPlayModule)
             
-            if !isModuleMode {
-                Button(action: {
-                    toggleBookmark()
-                }) {
-                    Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
-                        .font(.title2)
-                        .frame(width: 42, height: 42)
-                        .applyLiquidGlassBackground(cornerRadius: 12)
-                        .foregroundColor(isBookmarked ? .yellow : .white)
-                        .cornerRadius(8)
-                }
-                
-                Button(action: {
-                    showingAddToCollection = true
-                }) {
-                    Image(systemName: "plus")
-                        .font(.title2)
-                        .frame(width: 42, height: 42)
-                        .applyLiquidGlassBackground(cornerRadius: 12)
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
-                }
+            Button(action: {
+                toggleBookmark()
+            }) {
+                Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                    .font(.title2)
+                    .frame(width: 42, height: 42)
+                    .applyLiquidGlassBackground(cornerRadius: 12)
+                    .foregroundColor(isBookmarked ? .yellow : .white)
+                    .cornerRadius(8)
+            }
+            
+            Button(action: {
+                showingAddToCollection = true
+            }) {
+                Image(systemName: "plus")
+                    .font(.title2)
+                    .frame(width: 42, height: 42)
+                    .applyLiquidGlassBackground(cornerRadius: 12)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
             }
         }
         .padding(.horizontal)
@@ -484,7 +597,61 @@ struct MediaDetailView: View {
             )
         }
     }
-
+    
+    @ViewBuilder
+    private var moduleTMDBDetailsSection: some View {
+        if let movieDetail {
+            MovieDetailsSection(movie: movieDetail)
+        } else if let tvShowDetail {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Details")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .padding(.horizontal)
+                    .padding(.top)
+                    .foregroundColor(.white)
+                
+                VStack(spacing: 12) {
+                    if let numberOfSeasons = tvShowDetail.numberOfSeasons, numberOfSeasons > 0 {
+                        DetailRow(title: "Seasons", value: "\(numberOfSeasons)")
+                    }
+                    
+                    if let numberOfEpisodes = tvShowDetail.numberOfEpisodes, numberOfEpisodes > 0 {
+                        DetailRow(title: "Episodes", value: "\(numberOfEpisodes)")
+                    }
+                    
+                    if !tvShowDetail.genres.isEmpty {
+                        DetailRow(title: "Genres", value: tvShowDetail.genres.map { $0.name }.joined(separator: ", "))
+                    }
+                    
+                    if tvShowDetail.voteAverage > 0 {
+                        DetailRow(title: "Rating", value: String(format: "%.1f/10", tvShowDetail.voteAverage))
+                    }
+                    
+                    if let firstAirDate = tvShowDetail.firstAirDate, !firstAirDate.isEmpty {
+                        DetailRow(title: "First Aired", value: firstAirDate)
+                    }
+                    
+                    if let status = tvShowDetail.status {
+                        DetailRow(title: "Status", value: status)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 16)
+                .applyLiquidGlassBackground(cornerRadius: 12)
+                .padding(.horizontal)
+            }
+        } else if isMatchingTMDB {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Matching with TMDB…")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal)
+        }
+    }
+    
     @ViewBuilder
     private var moduleDetailsSection: some View {
         if let detail = moduleDetails.first {
@@ -505,16 +672,70 @@ struct MediaDetailView: View {
     }
     
     private func toggleBookmark() {
-        guard !isModuleMode else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
-            libraryManager.toggleBookmark(for: searchResult)
+            libraryManager.toggleBookmark(for: librarySearchResult)
             updateBookmarkStatus()
         }
     }
     
     private func updateBookmarkStatus() {
-        guard !isModuleMode else { return }
-        isBookmarked = libraryManager.isBookmarked(searchResult)
+        isBookmarked = libraryManager.isBookmarked(librarySearchResult)
+    }
+    
+    private func directPlayWithFirstService() {
+        guard let service = serviceManager.activeServices.first else {
+            moduleStreamError = "No active services. Please activate a service in the Services tab."
+            showingModuleStreamError = true
+            isDirectStreaming = false
+            return
+        }
+        
+        let episode = selectedEpisodeForSearch ?? preselectedEpisode
+        let title = searchResult.displayTitle
+        let isMovie = searchResult.isMovie
+        
+        let jsController = JSController()
+        jsController.loadScript(service.jsScript)
+        activeJSController = jsController
+        
+        jsController.fetchJsSearchResults(keyword: title, module: service) { [self] items in
+            guard let firstItem = items.first else {
+                DispatchQueue.main.async {
+                    self.moduleStreamError = "No results found in \(service.metadata.sourceName) for \"\(title)\""
+                    self.showingModuleStreamError = true
+                    self.isDirectStreaming = false
+                }
+                return
+            }
+            
+            jsController.fetchDetailsJS(url: firstItem.href) { details, episodes in
+                let targetHref: String
+                if isMovie || episodes.isEmpty {
+                    targetHref = firstItem.href
+                } else if let episode = episode {
+                    let match = episodes.first { $0.number == episode.episodeNumber } ?? episodes.first
+                    targetHref = match?.href ?? firstItem.href
+                } else {
+                    targetHref = episodes.first?.href ?? firstItem.href
+                }
+                
+                jsController.fetchStreamUrlJS(
+                    episodeUrl: targetHref,
+                    softsub: service.metadata.softsub ?? false,
+                    module: service
+                ) { streamResult in
+                    Task { @MainActor in
+                        self.isDirectStreaming = false
+                        self.processStreamResult(
+                            streams: streamResult.streams,
+                            subtitles: streamResult.subtitles,
+                            sources: streamResult.sources,
+                            service: service
+                        )
+                    }
+                }
+            }
+        }
     }
     
     private func searchInServices() {
@@ -522,9 +743,6 @@ struct MediaDetailView: View {
             searchInModuleService()
             return
         }
-
-        // This function will only be called when services are available
-        // since the button is disabled when no services are active
         
         if !searchResult.isMovie {
             if selectedEpisodeForSearch != nil {
@@ -543,7 +761,7 @@ struct MediaDetailView: View {
     private func loadMediaDetails() {
         isLoading = true
         errorMessage = nil
-
+        
         if isModuleMode {
             loadModuleDetails()
             return
@@ -596,17 +814,17 @@ struct MediaDetailView: View {
             }
         }
     }
-
+    
     private func loadModuleDetails() {
         guard let moduleContext else {
             errorMessage = "Missing module context"
             isLoading = false
             return
         }
-
+        
         let jsController = JSController()
         jsController.loadScript(moduleContext.service.jsScript)
-
+        
         jsController.fetchDetailsJS(url: moduleContext.item.href) { details, episodes in
             DispatchQueue.main.async {
                 self.moduleDetails = details
@@ -616,85 +834,318 @@ struct MediaDetailView: View {
                     self.synopsis = firstDetail.description
                 }
                 self.isLoading = false
+                self.matchTMDBMetadata()
             }
         }
     }
-
+    
+    // MARK: - Single-module TMDB matching
+    
+    private func matchTMDBMetadata() {
+        guard let moduleContext, !tmdbMatchAttempted, tmdbMatch == nil else { return }
+        tmdbMatchAttempted = true
+        isMatchingTMDB = true
+        
+        let queryTitle = moduleContext.item.title
+        let preferMovie = moduleEpisodes.isEmpty
+        
+        Task {
+            let match = await findBestTMDBMatch(title: queryTitle, preferMovie: preferMovie)
+            
+            guard let match else {
+                await MainActor.run { self.isMatchingTMDB = false }
+                return
+            }
+            
+            await MainActor.run {
+                self.tmdbMatch = match
+            }
+            
+            await loadTMDBMatchDetails(match)
+            
+            await MainActor.run {
+                self.isMatchingTMDB = false
+            }
+        }
+    }
+    
+    private func findBestTMDBMatch(title: String, preferMovie: Bool) async -> TMDBSearchResult? {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return nil }
+        
+        guard let results = try? await tmdbService.searchMulti(query: trimmedTitle), !results.isEmpty else {
+            return nil
+        }
+        
+        let normalizedQuery = normalizeTitleForMatching(trimmedTitle)
+        let sameTypeResults = results.filter { preferMovie ? $0.isMovie : $0.isTVShow }
+        let candidates = sameTypeResults.isEmpty ? results : sameTypeResults
+        
+        if let exactMatch = candidates.first(where: { normalizeTitleForMatching($0.displayTitle) == normalizedQuery }) {
+            return exactMatch
+        }
+        
+        if let popularMatch = candidates.sorted(by: { $0.popularity > $1.popularity }).first {
+            return popularMatch
+        }
+        
+        return results.sorted(by: { $0.popularity > $1.popularity }).first
+    }
+    
+    private func normalizeTitleForMatching(_ title: String) -> String {
+        let lowered = title.lowercased()
+        let filteredScalars = lowered.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || $0 == " "
+        }
+        let collapsed = String(String.UnicodeScalarView(filteredScalars))
+            .components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return collapsed
+    }
+    
+    private func loadTMDBMatchDetails(_ match: TMDBSearchResult) async {
+        do {
+            if match.isMovie {
+                async let detailTask = tmdbService.getMovieDetails(id: match.id)
+                async let imagesTask = tmdbService.getMovieImages(id: match.id, preferredLanguage: selectedLanguage)
+                let (detail, images) = try await (detailTask, imagesTask)
+                
+                await MainActor.run {
+                    self.movieDetail = detail
+                    if let overview = detail.overview, !overview.isEmpty {
+                        self.synopsis = overview
+                    }
+                    if let logo = self.tmdbService.getBestLogo(from: images, preferredLanguage: self.selectedLanguage) {
+                        self.logoURL = logo.fullURL
+                    }
+                }
+            } else {
+                async let detailTask = tmdbService.getTVShowWithSeasons(id: match.id)
+                async let imagesTask = tmdbService.getTVShowImages(id: match.id, preferredLanguage: selectedLanguage)
+                let (detail, images) = try await (detailTask, imagesTask)
+                
+                await MainActor.run {
+                    self.tvShowDetail = detail
+                    if let overview = detail.overview, !overview.isEmpty {
+                        self.synopsis = overview
+                    }
+                    if let logo = self.tmdbService.getBestLogo(from: images, preferredLanguage: self.selectedLanguage) {
+                        self.logoURL = logo.fullURL
+                    }
+                }
+            }
+        } catch {
+            Logger.shared.log("Failed to load matched TMDB details: \(error.localizedDescription)", type: "Warning")
+        }
+    }
+    
     private func searchInModuleService() {
         guard let moduleContext else { return }
-
+        
+        isDirectStreaming = true
         let jsController = JSController()
         jsController.loadScript(moduleContext.service.jsScript)
-
-        let targetHref: String
-        if moduleEpisodes.isEmpty {
-            targetHref = moduleContext.item.href
-        } else {
+        activeJSController = jsController
+        
+        if !moduleEpisodes.isEmpty {
             let safeIndex = min(max(selectedModuleEpisodeIndex, 0), moduleEpisodes.count - 1)
-            targetHref = moduleEpisodes[safeIndex].href
+            let targetHref = moduleEpisodes[safeIndex].href
+            streamFromHref(targetHref, service: moduleContext.service, jsController: jsController)
+            return
         }
-
-        jsController.fetchStreamUrlJS(
-            episodeUrl: targetHref,
-            softsub: moduleContext.service.metadata.softsub ?? false,
-            module: moduleContext.service
-        ) { streamResult in
-            Task { @MainActor in
-                guard let stream = self.extractPreferredStream(streams: streamResult.streams, sources: streamResult.sources) else {
-                    self.moduleStreamError = "No valid stream returned by this service"
-                    self.showingModuleStreamError = true
-                    return
+        
+        jsController.fetchDetailsJS(url: moduleContext.item.href) { details, episodes in
+            DispatchQueue.main.async {
+                let targetHref: String
+                if episodes.isEmpty {
+                    targetHref = moduleContext.item.href
+                } else {
+                    self.moduleEpisodes = episodes
+                    self.selectedModuleEpisodeIndex = 0
+                    targetHref = episodes[0].href
                 }
-
-                let subtitle = streamResult.subtitles?.first
-                self.playStreamURL(stream.url, service: moduleContext.service, subtitle: subtitle, headers: stream.headers)
+                self.streamFromHref(targetHref, service: moduleContext.service, jsController: jsController)
             }
         }
     }
-
+    
+    private func streamFromHref(_ href: String, service: Service, jsController: JSController) {
+        jsController.fetchStreamUrlJS(
+            episodeUrl: href,
+            softsub: service.metadata.softsub ?? false,
+            module: service
+        ) { streamResult in
+            Task { @MainActor in
+                self.isDirectStreaming = false
+                self.processStreamResult(
+                    streams: streamResult.streams,
+                    subtitles: streamResult.subtitles,
+                    sources: streamResult.sources,
+                    service: service
+                )
+            }
+        }
+    }
+    
+    // MARK: - Single module stream proces
+    
+    @MainActor
+    private func processStreamResult(streams: [String]?, subtitles: [String]?, sources: [[String: Any]]?, service: Service) {
+        let availableStreams = parseStreamOptions(streams: streams, sources: sources)
+        
+        if availableStreams.count > 1 {
+            streamOptions = availableStreams
+            pendingSubtitles = subtitles
+            pendingService = service
+            showingStreamMenu = true
+            return
+        }
+        
+        if let first = availableStreams.first {
+            resolveSubtitleSelection(subtitles: subtitles, defaultSubtitle: first.subtitle, service: service, streamURL: first.url, headers: first.headers)
+        } else if let single = extractSingleStreamURL(streams: streams, sources: sources) {
+            resolveSubtitleSelection(subtitles: subtitles, defaultSubtitle: nil, service: service, streamURL: single.url, headers: single.headers)
+        } else {
+            moduleStreamError = "No valid stream URL returned. The source may be temporarily unavailable."
+            showingModuleStreamError = true
+        }
+    }
+    
+    private func parseStreamOptions(streams: [String]?, sources: [[String: Any]]?) -> [StreamOption] {
+        var result: [StreamOption] = []
+        if let sources = sources, !sources.isEmpty {
+            for (idx, source) in sources.enumerated() {
+                guard let rawUrl = source["streamUrl"] as? String ?? source["url"] as? String, !rawUrl.isEmpty else { continue }
+                let title = (source["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                result.append(StreamOption(
+                    name: title?.isEmpty == false ? title! : "Stream \(idx + 1)",
+                    url: rawUrl,
+                    headers: safeConvertToHeaders(source["headers"]),
+                    subtitle: source["subtitle"] as? String
+                ))
+            }
+        } else if let streams = streams, streams.count > 1 {
+            var index = 0; var n = 1
+            while index < streams.count {
+                let entry = streams[index]
+                if isStreamURL(entry) {
+                    result.append(StreamOption(name: "Stream \(n)", url: entry, headers: nil, subtitle: nil)); n += 1; index += 1
+                } else if index + 1 < streams.count, isStreamURL(streams[index + 1]) {
+                    result.append(StreamOption(name: entry, url: streams[index + 1], headers: nil, subtitle: nil)); index += 2
+                } else { index += 1 }
+            }
+        }
+        return result
+    }
+    
+    private func extractSingleStreamURL(streams: [String]?, sources: [[String: Any]]?) -> (url: String, headers: [String: String]?)? {
+        if let src = sources?.first {
+            if let u = src["streamUrl"] as? String { return (u, safeConvertToHeaders(src["headers"])) }
+            if let u = src["url"] as? String        { return (u, safeConvertToHeaders(src["headers"])) }
+        }
+        if let streams = streams, !streams.isEmpty {
+            return (streams.first(where: { $0.hasPrefix("http") }) ?? streams[0], nil)
+        }
+        return nil
+    }
+    
+    @MainActor
+    private func resolveSubtitleSelection(subtitles: [String]?, defaultSubtitle: String?, service: Service, streamURL: String, headers: [String: String]?) {
+        guard let subtitles = subtitles, !subtitles.isEmpty else {
+            playStreamURL(streamURL, service: service, subtitle: defaultSubtitle, headers: headers); return
+        }
+        let options = parseSubtitleOptions(from: subtitles)
+        guard options.count > 1 else {
+            playStreamURL(streamURL, service: service, subtitle: options.first?.url ?? defaultSubtitle, headers: headers); return
+        }
+        subtitleOptions = options
+        pendingStreamURL = streamURL
+        pendingHeaders = headers
+        pendingService = service
+        pendingDefaultSubtitle = defaultSubtitle
+        showingSubtitlePicker = true
+    }
+    
+    private func parseSubtitleOptions(from subtitles: [String]) -> [(title: String, url: String)] {
+        var result: [(String, String)] = []; var i = 0; var n = 1
+        while i < subtitles.count {
+            let e = subtitles[i]
+            if isStreamURL(e) { result.append(("Subtitle \(n)", e)); n += 1; i += 1 }
+            else if i + 1 < subtitles.count, isStreamURL(subtitles[i + 1]) { result.append((e, subtitles[i + 1])); n += 1; i += 2 }
+            else { i += 1 }
+        }
+        return result
+    }
+    
+    private func isStreamURL(_ s: String) -> Bool { s.lowercased().hasPrefix("http://") || s.lowercased().hasPrefix("https://") }
+    
     private func extractPreferredStream(streams: [String]?, sources: [[String: Any]]?) -> (url: String, headers: [String: String]?)? {
         if let source = sources?.first,
            let url = source["url"] as? String,
            !url.isEmpty {
             return (url, safeConvertToHeaders(source["headers"]))
         }
-
+        
         if let streamUrl = streams?.first,
            !streamUrl.isEmpty {
             return (streamUrl, nil)
         }
-
+        
         return nil
     }
-
+    
+    private func currentMediaInfo() -> MediaInfo? {
+        if isModuleMode {
+            guard let tmdbId = tmdbMatch?.id else { return nil }
+            let title = tmdbMatch?.displayTitle ?? displayTitle
+            
+            if moduleEpisodes.isEmpty {
+                return .movie(id: tmdbId, title: title)
+            }
+            
+            let safeIndex = min(max(selectedModuleEpisodeIndex, 0), max(moduleEpisodes.count - 1, 0))
+            guard moduleEpisodes.indices.contains(safeIndex) else { return nil }
+            let episodeNumber = moduleEpisodes[safeIndex].number
+            return .episode(showId: tmdbId, showTitle: title, seasonNumber: 1, episodeNumber: episodeNumber)
+        }
+        
+        if searchResult.isMovie {
+            return .movie(id: searchResult.id, title: searchResult.displayTitle)
+        } else if let episode = selectedEpisodeForSearch {
+            return .episode(showId: searchResult.id, showTitle: searchResult.displayTitle, seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber)
+        }
+        return nil
+    }
+    
     private func playStreamURL(_ url: String, service: Service, subtitle: String?, headers: [String: String]?) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
-
+            
             guard let streamURL = URL(string: url) else {
                 Logger.shared.log("Invalid stream URL: \(url)", type: "Error")
                 moduleStreamError = "Invalid stream URL. The source returned a malformed URL."
                 showingModuleStreamError = true
                 return
             }
-
+            
             let externalRaw = UserDefaults.standard.string(forKey: "externalPlayer") ?? ExternalPlayer.none.rawValue
             let external = ExternalPlayer(rawValue: externalRaw) ?? .none
             let schemeUrl = external.schemeURL(for: url)
-
+            
             if let scheme = schemeUrl, UIApplication.shared.canOpenURL(scheme) {
                 UIApplication.shared.open(scheme, options: [:], completionHandler: nil)
                 Logger.shared.log("Opening external player with scheme: \(scheme)", type: "General")
                 return
             }
-
+            
             let serviceURL = service.metadata.baseUrl
             var finalHeaders: [String: String] = [
                 "Origin": serviceURL,
                 "Referer": serviceURL,
                 "User-Agent": URLSession.randomUserAgent
             ]
-
+            
             if let custom = headers {
                 for (k, v) in custom {
                     finalHeaders[k] = v
@@ -703,48 +1154,42 @@ struct MediaDetailView: View {
                     finalHeaders["User-Agent"] = URLSession.randomUserAgent
                 }
             }
-
+            
             let inAppRaw = UserDefaults.standard.string(forKey: "inAppPlayer") ?? "Normal"
             let inAppPlayer = (inAppRaw == "mpv") ? "mpv" : "Normal"
-
+            
             if inAppPlayer == "mpv" {
                 let preset = PlayerPreset.presets.first
                 let subtitleArray: [String]? = subtitle.map { [$0] }
                 let pvc = PlayerViewController(
                     url: streamURL,
-                    preset: preset ?? PlayerPreset(title: "Default", summary: "", stream: nil, commands: []),
+                    preset: preset ?? PlayerPreset(title: displayTitle, summary: "", stream: nil, commands: []),
                     headers: finalHeaders,
                     subtitles: subtitleArray
                 )
-                if !isModuleMode {
-                    if searchResult.isMovie {
-                        pvc.mediaInfo = .movie(id: searchResult.id, title: searchResult.displayTitle)
-                    } else if let episode = selectedEpisodeForSearch {
-                        pvc.mediaInfo = .episode(showId: searchResult.id, showTitle: searchResult.displayTitle, seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber)
-                    }
+                if let mediaInfo = currentMediaInfo() {
+                    pvc.mediaInfo = mediaInfo
                 }
                 pvc.modalPresentationStyle = .fullScreen
-
+                
                 if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                    let rootVC = windowScene.windows.first?.rootViewController {
                     rootVC.topmostViewController().present(pvc, animated: true, completion: nil)
+                } else {
+                    Logger.shared.log("Failed to find root view controller to present MPV player", type: "Error")
                 }
                 return
             }
-
+            
             let playerVC = NormalPlayer()
             let asset = AVURLAsset(url: streamURL, options: ["AVURLAssetHTTPHeaderFieldsKey": finalHeaders])
             let item = AVPlayerItem(asset: asset)
             playerVC.player = AVPlayer(playerItem: item)
-            if !isModuleMode {
-                if searchResult.isMovie {
-                    playerVC.mediaInfo = .movie(id: searchResult.id, title: searchResult.displayTitle)
-                } else if let episode = selectedEpisodeForSearch {
-                    playerVC.mediaInfo = .episode(showId: searchResult.id, showTitle: searchResult.displayTitle, seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber)
-                }
+            if let mediaInfo = currentMediaInfo() {
+                playerVC.mediaInfo = mediaInfo
             }
             playerVC.modalPresentationStyle = .fullScreen
-
+            
             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let rootVC = windowScene.windows.first?.rootViewController {
                 rootVC.topmostViewController().present(playerVC, animated: true) {
@@ -755,15 +1200,15 @@ struct MediaDetailView: View {
             }
         }
     }
-
+    
     private func safeConvertToHeaders(_ value: Any?) -> [String: String]? {
         guard let value = value else { return nil }
         if value is NSNull { return nil }
-
+        
         if let headers = value as? [String: String] {
             return headers
         }
-
+        
         if let headersAny = value as? [String: Any] {
             var safeHeaders: [String: String] = [:]
             for (key, val) in headersAny {
@@ -777,7 +1222,7 @@ struct MediaDetailView: View {
             }
             return safeHeaders.isEmpty ? nil : safeHeaders
         }
-
+        
         if let headersAny = value as? [AnyHashable: Any] {
             var safeHeaders: [String: String] = [:]
             for (key, val) in headersAny {
@@ -792,7 +1237,7 @@ struct MediaDetailView: View {
             }
             return safeHeaders.isEmpty ? nil : safeHeaders
         }
-
+        
         return nil
     }
 }

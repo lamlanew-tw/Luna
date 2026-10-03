@@ -16,6 +16,30 @@ struct TMDBFiltersView: View {
             Section {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
+                        Text("Anime Only Mode")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        
+                        Text("Show only anime content throughout the app. Hides Trending and Top Rated Movies/Shows sections.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.leading)
+                    }
+                    
+                    Spacer()
+                    
+                    Toggle("", isOn: $contentFilter.animeOnlyMode)
+                        .tint(accentColorManager.currentAccentColor)
+                }
+            } header: {
+                Text("Anime Mode")
+            } footer: {
+                Text("When enabled, search results and home sections will only display anime (Japanese animation). Trending and non-anime sections are hidden and disabled in Home Sections settings.")
+            }
+            
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text("Filter Horror Content")
                             .font(.subheadline)
                             .fontWeight(.medium)
@@ -29,6 +53,24 @@ struct TMDBFiltersView: View {
                     Spacer()
                     
                     Toggle("", isOn: $contentFilter.filterHorror)
+                        .tint(accentColorManager.currentAccentColor)
+                }
+                
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Filter NSFW Content")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        
+                        Text("Hide titles with explicit or near-explicit sexual content")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.leading)
+                    }
+                    
+                    Spacer()
+                    
+                    Toggle("", isOn: $contentFilter.filterNSFW)
                         .tint(accentColorManager.currentAccentColor)
                 }
             } header: {
@@ -50,11 +92,5 @@ struct TMDBFiltersView: View {
             }
         }
         .navigationTitle("Content Filters")
-    }
-}
-
-#Preview {
-    NavigationView {
-        TMDBFiltersView()
     }
 }

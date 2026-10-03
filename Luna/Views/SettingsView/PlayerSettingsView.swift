@@ -5,8 +5,9 @@
 //  Created by Francesco on 19/09/25.
 //
 
-import SwiftUI
 import AVKit
+import Sybau
+import SwiftUI
 
 enum ExternalPlayer: String, CaseIterable, Identifiable {
     case none = "Default"
@@ -23,22 +24,14 @@ enum ExternalPlayer: String, CaseIterable, Identifiable {
     func schemeURL(for urlString: String) -> URL? {
         let url = urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlString
         switch self {
-        case .infuse:
-            return URL(string: "infuse://x-callback-url/play?url=\(url)")
-        case .vlc:
-            return URL(string: "vlc://\(url)")
-        case .outPlayer:
-            return URL(string: "outplayer://\(url)")
-        case .nPlayer:
-            return URL(string: "nplayer-\(url)")
-        case .senPlayer:
-            return URL(string: "senplayer://x-callback-url/play?url=\(url)")
-        case .tracy:
-            return URL(string: "tracy://open?url=\(url)")
-        case .vidHub:
-            return URL(string: "open-vidhub://x-callback-url/open?url=\(url)")
-        case .none:
-            return nil
+        case .infuse: return URL(string: "infuse://x-callback-url/play?url=\(url)")
+        case .vlc: return URL(string: "vlc://\(url)")
+        case .outPlayer: return URL(string: "outplayer://\(url)")
+        case .nPlayer: return URL(string: "nplayer-\(url)")
+        case .senPlayer: return URL(string: "senplayer://x-callback-url/play?url=\(url)")
+        case .tracy: return URL(string: "tracy://open?url=\(url)")
+        case .vidHub: return URL(string: "open-vidhub://x-callback-url/open?url=\(url)")
+        case .none: return nil
         }
     }
 }
@@ -50,6 +43,7 @@ enum InAppPlayer: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+// MARK: - PlayerSettingsStore
 final class PlayerSettingsStore: ObservableObject {
     @Published var holdSpeed: Double {
         didSet { UserDefaults.standard.set(holdSpeed, forKey: "holdSpeedPlayer") }
@@ -67,6 +61,30 @@ final class PlayerSettingsStore: ObservableObject {
         didSet { UserDefaults.standard.set(inAppPlayer.rawValue, forKey: "inAppPlayer") }
     }
     
+    @Published var skipInterval: Int {
+        didSet { UserDefaults.standard.set(skipInterval, forKey: "skipIntervalSeconds") }
+    }
+    
+    @Published var subtitleVisible: Bool {
+        didSet { UserDefaults.standard.set(subtitleVisible, forKey: "subtitles_isVisible") }
+    }
+    
+    @Published var subtitleForegroundColor: Color {
+        didSet { saveColor(subtitleForegroundColor, forKey: "subtitles_foregroundColor") }
+    }
+    
+    @Published var subtitleStrokeColor: Color {
+        didSet { saveColor(subtitleStrokeColor, forKey: "subtitles_strokeColor") }
+    }
+    
+    @Published var subtitleStrokeWidth: Double {
+        didSet { UserDefaults.standard.set(subtitleStrokeWidth, forKey: "subtitles_strokeWidth") }
+    }
+    
+    @Published var subtitleFontSize: Double {
+        didSet { UserDefaults.standard.set(subtitleFontSize, forKey: "subtitles_fontSize") }
+    }
+    
     init() {
         let savedSpeed = UserDefaults.standard.double(forKey: "holdSpeedPlayer")
         self.holdSpeed = savedSpeed > 0 ? savedSpeed : 2.0
@@ -78,9 +96,45 @@ final class PlayerSettingsStore: ObservableObject {
         
         let inAppRaw = UserDefaults.standard.string(forKey: "inAppPlayer") ?? InAppPlayer.normal.rawValue
         self.inAppPlayer = InAppPlayer(rawValue: inAppRaw) ?? .normal
+        
+        let savedInterval = UserDefaults.standard.integer(forKey: "skipIntervalSeconds")
+        self.skipInterval = (savedInterval >= 5 && savedInterval <= 90) ? savedInterval : 15
+        
+        let subtitleVisibleKey = "subtitles_isVisible"
+        if UserDefaults.standard.object(forKey: subtitleVisibleKey) != nil {
+            self.subtitleVisible = UserDefaults.standard.bool(forKey: subtitleVisibleKey)
+        } else {
+            self.subtitleVisible = false
+            UserDefaults.standard.set(false, forKey: subtitleVisibleKey)
+        }
+        
+        let strokeWidth = UserDefaults.standard.double(forKey: "subtitles_strokeWidth")
+        self.subtitleStrokeWidth = strokeWidth > 0 ? strokeWidth : 1.0
+        
+        let fontSize = UserDefaults.standard.double(forKey: "subtitles_fontSize")
+        self.subtitleFontSize = fontSize > 0 ? fontSize : 38.0
+        
+        self.subtitleForegroundColor = Self.loadColor(forKey: "subtitles_foregroundColor") ?? .white
+        self.subtitleStrokeColor = Self.loadColor(forKey: "subtitles_strokeColor") ?? .black
+    }
+    
+    private func saveColor(_ color: Color, forKey key: String) {
+        let uiColor = UIColor(color)
+        if let data = try? NSKeyedArchiver.archivedData(withRootObject: uiColor, requiringSecureCoding: false) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+    
+    private static func loadColor(forKey key: String) -> Color? {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let uiColor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: UIColor.self, from: data) else {
+            return nil
+        }
+        return Color(uiColor)
     }
 }
 
+// MARK: - PlayerSettingsView
 struct PlayerSettingsView: View {
     @StateObject private var accentColorManager = AccentColorManager.shared
     @StateObject private var store = PlayerSettingsStore()
@@ -88,7 +142,10 @@ struct PlayerSettingsView: View {
     
     var body: some View {
         List {
-            Section(header: Text("Default Player"), footer: Text("This settings work exclusively with the Default media player.")) {
+            Section(
+                header: Text("Default Player"),
+                footer: Text("This settings work exclusively with the Default media player.")
+            ) {
 #if !os(tvOS)
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -103,8 +160,24 @@ struct PlayerSettingsView: View {
                     }
                     
                     Spacer()
-                    
                     Stepper(value: $store.holdSpeed, in: 0.1...3, step: 0.1) {}
+                }
+                
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Skip Interval: \(store.skipInterval)s")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        
+                        Text("Duration to skip forward/backward. (mpv exclusive)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.leading)
+                    }
+                    
+                    Spacer()
+                    Stepper(value: $store.skipInterval, in: 5...90, step: 5) {}
+                        .disabled(store.inAppPlayer != .mpv)
                 }
 #endif
                 
@@ -121,7 +194,6 @@ struct PlayerSettingsView: View {
                     }
                     
                     Spacer()
-                    
                     Toggle("", isOn: $store.landscapeOnly)
                         .tint(accentColorManager.currentAccentColor)
                 }
@@ -129,6 +201,7 @@ struct PlayerSettingsView: View {
             .disabled(store.externalPlayer != .none)
             
             Section(header: Text("Media Player")) {
+#if !os(tvOS)
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Media Player")
@@ -148,6 +221,7 @@ struct PlayerSettingsView: View {
                     }
                     .pickerStyle(.menu)
                 }
+#endif
                 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -168,12 +242,61 @@ struct PlayerSettingsView: View {
                     }
                     .pickerStyle(.menu)
                 }
+                .disabled(store.externalPlayer != .none)
             }
             
+#if !os(tvOS)
+            Section(header: Text("Subtitle Appearance")) {
+                Toggle("Show Subtitles", isOn: $store.subtitleVisible)
+                    .tint(accentColorManager.currentAccentColor)
+                
+                HStack {
+                    Text("Foreground Color")
+                    Spacer()
+                    ColorPicker("", selection: $store.subtitleForegroundColor)
+                        .labelsHidden()
+                }
+                
+                HStack {
+                    Text("Stroke Color")
+                    Spacer()
+                    ColorPicker("", selection: $store.subtitleStrokeColor)
+                        .labelsHidden()
+                }
+                
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(String(format: "Stroke Width: %.1f", store.subtitleStrokeWidth))
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        
+                        Text("Outline thickness of subtitle text.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Stepper(value: $store.subtitleStrokeWidth, in: 0...3, step: 0.5) {}
+                }
+                
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Font Size: \(Int(store.subtitleFontSize))")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        
+                        Text("Text size of subtitles.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Stepper(value: $store.subtitleFontSize, in: 20...80, step: 2) {}
+                }
+            }
+            .disabled(store.externalPlayer != .none)
+#endif
+            
             Section(header: Text("Testing")) {
-                Button(action: {
-                    playTestVideo()
-                }) {
+                Button(action: { playTestVideo() }) {
                     Text("Test Video Player")
                         .foregroundColor(accentColorManager.currentAccentColor)
                 }
@@ -183,31 +306,41 @@ struct PlayerSettingsView: View {
     }
     
     private func playTestVideo() {
-        let testUrlString = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+        let testUrlString = "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4"
         guard let streamURL = URL(string: testUrlString) else { return }
         
+#if os(tvOS)
+        let player = AVPlayer(url: streamURL)
+        let playerVC = AVPlayerViewController()
+        playerVC.player = player
+        
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            rootVC.present(playerVC, animated: true) {
+                player.play()
+            }
+        }
+#else
         let external = store.externalPlayer
         if let schemeUrl = external.schemeURL(for: testUrlString), external != .none, UIApplication.shared.canOpenURL(schemeUrl) {
             UIApplication.shared.open(schemeUrl, options: [:], completionHandler: nil)
             return
         }
         
-        let inAppPlayer = store.inAppPlayer
-        
-        if inAppPlayer == .mpv {
+        if store.inAppPlayer == .mpv {
             let preset = PlayerPreset.presets.first
             let pvc = PlayerViewController(
                 url: streamURL,
                 preset: preset ?? PlayerPreset(title: "Default", summary: "", stream: nil, commands: []),
-                headers: nil,
-                subtitles: nil
+                headers: nil as [String: String]?,
+                subtitles: nil as [String]?
             )
-            pvc.mediaInfo = .movie(id: 0, title: "Big Buck Bunny")
+            pvc.mediaInfo = MediaInfo.movie(id: 0, title: "Big Buck Bunny")
             pvc.modalPresentationStyle = .fullScreen
             
             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let rootVC = windowScene.windows.first?.rootViewController {
-                rootVC.topmostViewController().present(pvc, animated: true, completion: nil)
+                rootVC.topmostViewController().present(pvc, animated: true)
             }
         } else {
             let playerVC = NormalPlayer()
@@ -224,5 +357,6 @@ struct PlayerSettingsView: View {
                 }
             }
         }
+#endif
     }
 }

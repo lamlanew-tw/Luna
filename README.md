@@ -1,6 +1,12 @@
 # Luna
 <div align="center"> 
 
+<p align="center">
+	<img src="https://www.cranci.me/screenshots/Luna/home.jpg" alt="Luna screenshot 1" width="160">
+	<img src="https://www.cranci.me/screenshots/Luna/media.jpg" alt="Luna screenshot 2" width="160">
+	<img src="https://www.cranci.me/screenshots/Luna/search.jpg" alt="Luna screenshot 3" width="160">
+</p>
+
 **A modular media player for iOS, tvOS and macOS, under the GPLv3.0 License.**
 
 [![Build and Release IPA](https://github.com/cranci1/Luna/actions/workflows/build.yml/badge.svg)](https://github.com/cranci1/Luna/actions/workflows/build.yml)
@@ -61,14 +67,14 @@ You can download Luna using Xcode or using the .ipa file, which you can find in 
 ## Acknowledgements
 
 Frameworks:
-- [MPVKit](https://github.com/mpvkit/MPVKit) - GPLv3.0 License
-- [SoraCore](https://github.com/cranci1/SoraCore) – Custom License
 - [KingFisher](https://github.com/onevcat/Kingfisher) - MIT License
+- [Sybau](https://github.com/cranci1/Sybau) - GPLv3.0 License
+- [MPVKit](https://github.com/mpvkit/MPVKit) - GPLv3.0 License
+- [SoraCore](https://github.com/cranci1/SoraCore) – GPLv3.0 License
 - [FakeWebkit](https://github.com/undeaDD/FakeWebKit) - GPLv3.0 License
 
 Misc:
 - [50/50](https://github.com/50n50) for the app icon  
-
 ## License
 
 This project is licensed under the [GNU General Public License v3.0](LICENSE) (GPLv3.0).

@@ -12,19 +12,19 @@
     {
       "identity" : "kingfisher",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/onevcat/Kingfisher.git",
+      "location" : "https://github.com/onevcat/Kingfisher",
       "state" : {
-        "revision" : "c92b84898e34ab46ff0dad86c02a0acbe2d87008",
-        "version" : "8.8.0"
+        "revision" : "410984bf301f4fa224fe56277b3f8672cc465c79",
+        "version" : "8.11.0"
       }
     },
     {
       "identity" : "mpvkit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/edde746/MPVKit/",
+      "location" : "https://github.com/mpvkit/MPVKit",
       "state" : {
-        "branch" : "main",
-        "revision" : "29803ccbfa631997d496f34c2c1ed191cc8fd2c3"
+        "revision" : "613c0ccc3acf70e136aaff880a9b5fe8fdfaf5b8",
+        "version" : "0.41.0"
       }
     },
     {
@@ -33,7 +33,16 @@
       "location" : "https://github.com/cranci1/SoraCore",
       "state" : {
         "branch" : "main",
-        "revision" : "50ddc160fd606e9708adefc1d9fc7003b574446b"
+        "revision" : "e82c92005fd7d1b4d3e9d56901ad8c3ac9089bfb"
+      }
+    },
+    {
+      "identity" : "sybau",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/cranci1/Sybau.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "489e4653477d45013c9cc305f9f89637b28678af"
       }
     }
   ],
